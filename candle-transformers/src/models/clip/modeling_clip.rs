@@ -184,7 +184,9 @@ impl CLIPAttention {
         })
     }
 
-    fn _shape(&self, tensor: &Tensor, seq_len: usize, bsz: usize) -> 
+    fn _shape(&self, tensor: &Tensor, seq_len: usize, bsz: usize) -> Result<Tensor> {
+        Ok(tensor.reshape((bsz, seq_len, self.num_heads, self.head_dim))?.transpose(1, 2)?.contiguous()?)
+    }
 
     fn forward(&self, hidden_states: &Tensor) -> Result<Tensor> {
         let (bsz, tgt_len, embed_dim) = hidden_states.dims3()?;
@@ -194,7 +196,10 @@ impl CLIPAttention {
             .q_proj
             .forward(hidden_states)?
             .broadcast_mul(&scale_tensor)?;
+        let key_states = self._shape(&self.k_proj.forward(hidden_states)?, tgt_len, bsz)?;
+        let value_states = self._shape(&self.v_proj.forward(hidden_states)?, tgt_len, bsz)?;
         
+
         Ok(Tensor::zeros((2, 3), DType::F32, &Device::Cpu)?)
     }
 }
