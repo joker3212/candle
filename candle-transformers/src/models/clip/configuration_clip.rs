@@ -15,9 +15,8 @@ pub struct CLIPTextConfig {
     attention_dropout: f64,
     pad_token_id: usize,
     bos_token_id: usize,
-    eos_token_id: usize
+    eos_token_id: usize,
 }
-
 
 impl Default for CLIPTextConfig {
     fn default() -> Self {
@@ -36,25 +35,25 @@ impl Default for CLIPTextConfig {
             initializer_factor: 1.0,
             pad_token_id: 1,
             bos_token_id: 49406,
-            eos_token_id: 49407 
+            eos_token_id: 49407,
         }
     }
 }
 
 pub struct CLIPVisionConfig {
-        pub hidden_size: usize,
-        intermediate_size: usize,
-        projection_dim: usize,
-        num_hidden_layers: usize,
-        num_attention_heads: usize,
-        pub num_channels: usize,
-        pub patch_size: usize,
-        pub image_size: usize,
-        initializer_range: f64,
-        initializer_factor: f64,
-        attention_dropout: f64,
-        layer_norm_eps: f64,
-        hidden_act: Activation
+    pub hidden_size: usize,
+    intermediate_size: usize,
+    projection_dim: usize,
+    num_hidden_layers: usize,
+    num_attention_heads: usize,
+    pub num_channels: usize,
+    pub patch_size: usize,
+    pub image_size: usize,
+    initializer_range: f64,
+    initializer_factor: f64,
+    attention_dropout: f64,
+    layer_norm_eps: f64,
+    hidden_act: Activation,
 }
 
 impl Default for CLIPVisionConfig {
@@ -72,16 +71,15 @@ impl Default for CLIPVisionConfig {
             initializer_factor: 1.0,
             attention_dropout: 0.0,
             layer_norm_eps: 1e-5,
-            hidden_act: Activation::NewGelu
+            hidden_act: Activation::NewGelu,
         }
     }
 }
-
 
 pub struct CLIPConfig {
     clip_text_config: CLIPTextConfig,
     clip_vision_config: CLIPVisionConfig,
     projection_dim: usize,
     logit_scale_init_value: f64,
-    initializer_factor: f64
+    initializer_factor: f64,
 }
