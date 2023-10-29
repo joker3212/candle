@@ -1,7 +1,10 @@
 use crate::models::clip::configuration_clip::{CLIPConfig, CLIPTextConfig, CLIPVisionConfig};
 use crate::models::with_tracing::{linear, Embedding, Linear};
 use candle::{DType, Device, IndexOp, Module, Result, Shape, Tensor, D};
-use candle_nn::{conv2d, Activation, Conv2d, Conv2dConfig, VarBuilder};
+use candle_nn::{
+    conv2d_no_bias, layer_norm, Activation, Conv2d, Conv2dConfig, LayerNorm, LayerNormConfig,
+    VarBuilder,
+};
 
 struct CLIPVisionModelOutput {
     image_embeds: Option<Tensor>,
@@ -41,7 +44,7 @@ impl CLIPVisionEmbeddings {
         let num_positions = num_patches + 1;
         let position_ids = Tensor::arange(0, num_positions as u32, &Device::Cpu)?
             .expand(Shape::from_dims(&[1, num_positions]))?;
-        let patch_embedding = conv2d(
+        let patch_embedding = conv2d_no_bias(
             config.num_channels,
             config.hidden_size,
             config.patch_size,
@@ -140,6 +143,9 @@ impl CLIPTextEmbeddings {
 
 struct CLIPAttention {
     embed_dim: usize,
+    num_heads: usize,
+    head_dim: usize,
+    scale: f32,
     q_proj: Linear,
     k_proj: Linear,
     v_proj: Linear,
@@ -148,8 +154,13 @@ struct CLIPAttention {
 
 impl CLIPAttention {
     fn load(vb: VarBuilder, config: &CLIPTextConfig) -> Result<Self> {
+        let head_dim = config.hidden_size / config.num_attention_heads;
+        let scale: f32 = 1f32 / (head_dim as f32).sqrt();
         Ok(CLIPAttention {
             embed_dim: config.hidden_size,
+            num_heads: config.num_attention_heads,
+            head_dim: config.hidden_size / config.num_attention_heads,
+            scale: scale,
             q_proj: linear(
                 config.hidden_size,
                 config.hidden_size,
@@ -172,11 +183,81 @@ impl CLIPAttention {
             )?,
         })
     }
-}
-struct CLIPMLP {}
-struct CLIPEncoderLayer {}
 
-struct CLIPEncoder {}
+    fn _shape(&self, tensor: &Tensor, seq_len: usize, bsz: usize) -> 
+
+    fn forward(&self, hidden_states: &Tensor) -> Result<Tensor> {
+        let (bsz, tgt_len, embed_dim) = hidden_states.dims3()?;
+        let scale_tensor = Tensor::from_vec([self.scale].to_vec(), (1), &Device::Cpu)?;
+        // get query proj
+        let query_states = self
+            .q_proj
+            .forward(hidden_states)?
+            .broadcast_mul(&scale_tensor)?;
+        
+        Ok(Tensor::zeros((2, 3), DType::F32, &Device::Cpu)?)
+    }
+}
+
+struct CLIPMLP {
+    activation_fn: Activation,
+    fc1: Linear,
+    fc2: Linear,
+}
+
+impl CLIPMLP {
+    fn load(vb: VarBuilder, config: &CLIPTextConfig) -> Result<Self> {
+        Ok(Self {
+            activation_fn: config.hidden_act,
+            fc1: linear(config.hidden_size, config.intermediate_size, vb.pp("fc1"))?,
+            fc2: linear(config.intermediate_size, config.hidden_size, vb.pp("fc2"))?,
+        })
+    }
+
+    fn forward(&self, hidden_states: &Tensor) -> Result<Tensor> {
+        let mut output = self.fc1.forward(hidden_states)?;
+        output = self.activation_fn.forward(&output)?;
+        output = self.fc2.forward(&output)?;
+        Ok(output)
+    }
+}
+struct CLIPEncoderLayer {
+    self_attn: CLIPAttention,
+    layer_norm1: LayerNorm,
+    mlp: CLIPMLP,
+    layer_norm2: LayerNorm,
+}
+
+impl CLIPEncoderLayer {
+    fn load(vb: VarBuilder, config: &CLIPTextConfig) -> Result<Self> {
+        Ok(Self {
+            self_attn: CLIPAttention::load(vb.pp("self_attention"), &config)?,
+            layer_norm1: layer_norm(
+                config.hidden_size,
+                LayerNormConfig::default(),
+                vb.pp("layer_norm1"),
+            )?,
+            mlp: CLIPMLP::load(vb.pp("mlp"), &config)?,
+            layer_norm2: layer_norm(
+                config.hidden_size,
+                LayerNormConfig::default(),
+                vb.pp("layer_norm2"),
+            )?,
+        })
+    }
+
+    fn forward(&self, hidden_states: &Tensor) -> Result<Tensor> {
+        let layer_norm1_output = self.layer_norm1.forward(&hidden_states)?;
+        let attn_output = self.self_attn.forward(&layer_norm1_output)?;
+        let layer1_out = (hidden_states + attn_output)?;
+
+        let layer_norm2_output = self.layer_norm2.forward(&layer1_out)?;
+        let mlp_output = self.mlp.forward(&layer_norm2_output)?;
+        let output = (layer1_out + mlp_output)?;
+
+        Ok(output)
+    }
+}
 
 struct CLIPTextTransformer {}
 
