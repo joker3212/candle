@@ -5,7 +5,7 @@ pub struct CLIPTextConfig {
     pub hidden_size: usize,
     pub intermediate_size: usize,
     projection_dim: usize,
-    num_hidden_layers: usize,
+    pub num_hidden_layers: usize,
     pub num_attention_heads: usize,
     pub max_position_embeddings: usize,
     layer_norm_eps: f64,
@@ -15,7 +15,7 @@ pub struct CLIPTextConfig {
     attention_dropout: f64,
     pad_token_id: usize,
     bos_token_id: usize,
-    eos_token_id: usize,
+    pub eos_token_id: usize
 }
 
 impl Default for CLIPTextConfig {
@@ -77,7 +77,7 @@ impl Default for CLIPVisionConfig {
 }
 
 pub struct CLIPConfig {
-    clip_text_config: CLIPTextConfig,
+    pub clip_text_config: CLIPTextConfig,
     clip_vision_config: CLIPVisionConfig,
     projection_dim: usize,
     logit_scale_init_value: f64,

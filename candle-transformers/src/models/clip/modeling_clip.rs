@@ -1,5 +1,6 @@
 use crate::models::clip::configuration_clip::{CLIPConfig, CLIPTextConfig, CLIPVisionConfig};
 use crate::models::with_tracing::{linear, Embedding, Linear};
+//use crate::quantized_var_builder::VarBuilder;
 use candle::{DType, Device, IndexOp, Module, Result, Shape, Tensor, D};
 use candle_nn::ops::softmax;
 use candle_nn::{
@@ -194,7 +195,7 @@ impl CLIPAttention {
 
     fn forward(&self, hidden_states: &Tensor) -> Result<Tensor> {
         let (bsz, tgt_len, embed_dim) = hidden_states.dims3()?;
-        let scale_tensor = Tensor::from_vec([self.scale].to_vec(), (1), &Device::Cpu)?;
+        let scale_tensor = Tensor::from_vec([self.scale].to_vec(), (1,), &Device::Cpu)?;
         // get query proj
         let mut query_states = self
             .q_proj
@@ -279,7 +280,38 @@ impl CLIPEncoderLayer {
     }
 }
 
-struct CLIPTextTransformer {}
+struct CLIPEncoder {
+    layers: Vec<CLIPEncoderLayer>,
+}
+
+impl CLIPEncoder {
+    fn load(vb: VarBuilder, config: &CLIPConfig) -> Result<Self> {
+        let mut layers = Vec::new();
+        for _ in 1..config.clip_text_config.num_hidden_layers {
+            layers.push(CLIPEncoder::load(
+                vb.pp("encoder_layer"),
+                &config.clip_text_config,
+            )?);
+        }
+        Ok(Self { layers: layers })
+    }
+
+    fn forward(&self, input_embeds: &Tensor) -> Result<Tensor> {
+        let mut layer_output = input_embeds;
+        for i in 1..self.layers.len() {
+            layer_output = self.layers.forward(layer_output)?;
+        }
+        Ok(layer_output)
+    }
+}
+
+struct CLIPTextTransformer {
+    embed_dim: usize,
+    embeddings: CLIPTextEmbeddings,
+    encoder: CLIPEncoder,
+    final_layer_norm: LayerNorm,
+    eos_token_id: usize,
+}
 
 struct CLIPTextModel {}
 
