@@ -1,6 +1,7 @@
 use crate::models::clip::configuration_clip::{CLIPConfig, CLIPTextConfig, CLIPVisionConfig};
 use crate::models::with_tracing::{linear, Embedding, Linear};
 use candle::{DType, Device, IndexOp, Module, Result, Shape, Tensor, D};
+use candle_nn::ops::softmax;
 use candle_nn::{
     conv2d_no_bias, layer_norm, Activation, Conv2d, Conv2dConfig, LayerNorm, LayerNormConfig,
     VarBuilder,
@@ -185,22 +186,36 @@ impl CLIPAttention {
     }
 
     fn _shape(&self, tensor: &Tensor, seq_len: usize, bsz: usize) -> Result<Tensor> {
-        Ok(tensor.reshape((bsz, seq_len, self.num_heads, self.head_dim))?.transpose(1, 2)?.contiguous()?)
+        Ok(tensor
+            .reshape((bsz, seq_len, self.num_heads, self.head_dim))?
+            .transpose(1, 2)?
+            .contiguous()?)
     }
 
     fn forward(&self, hidden_states: &Tensor) -> Result<Tensor> {
         let (bsz, tgt_len, embed_dim) = hidden_states.dims3()?;
         let scale_tensor = Tensor::from_vec([self.scale].to_vec(), (1), &Device::Cpu)?;
         // get query proj
-        let query_states = self
+        let mut query_states = self
             .q_proj
             .forward(hidden_states)?
             .broadcast_mul(&scale_tensor)?;
-        let key_states = self._shape(&self.k_proj.forward(hidden_states)?, tgt_len, bsz)?;
-        let value_states = self._shape(&self.v_proj.forward(hidden_states)?, tgt_len, bsz)?;
-        
+        let mut key_states = self._shape(&self.k_proj.forward(hidden_states)?, tgt_len, bsz)?;
+        let mut value_states = self._shape(&self.v_proj.forward(hidden_states)?, tgt_len, bsz)?;
 
-        Ok(Tensor::zeros((2, 3), DType::F32, &Device::Cpu)?)
+        let proj_shape = (bsz * self.num_heads, tgt_len, self.head_dim);
+        query_states = self
+            ._shape(&query_states, tgt_len, bsz)?
+            .reshape(proj_shape)?;
+
+        key_states = key_states.reshape(proj_shape)?;
+        value_states = value_states.reshape(proj_shape)?;
+
+        let mut attn_weights = query_states.matmul(&key_states.transpose(1, 2)?)?;
+        attn_weights = softmax(&attn_weights, D::Minus1)?;
+        let attn_output = attn_weights.matmul(&value_states)?;
+
+        Ok(attn_output)
     }
 }
 
