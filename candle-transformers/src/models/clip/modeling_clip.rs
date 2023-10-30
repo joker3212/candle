@@ -61,9 +61,9 @@ impl CLIPVisionEmbeddings {
         Ok(Self {
             embed_dim: config.hidden_size,
             class_embedding: Tensor::randn(0f32, 1f32, (config.hidden_size,), &Device::Cpu)?,
-            patch_embedding: patch_embedding,
-            position_embedding: position_embedding,
-            position_ids: position_ids,
+            patch_embedding,
+            position_embedding,
+            position_ids,
         })
     }
 
@@ -108,9 +108,9 @@ impl CLIPTextEmbeddings {
 
         Ok(Self {
             embed_dim: config.hidden_size,
-            token_embedding: token_embedding,
-            position_embedding: position_embedding,
-            position_ids: position_ids,
+            token_embedding,
+            position_embedding,
+            position_ids,
         })
     }
 
@@ -162,7 +162,7 @@ impl CLIPAttention {
             embed_dim: config.hidden_size,
             num_heads: config.num_attention_heads,
             head_dim: config.hidden_size / config.num_attention_heads,
-            scale: scale,
+            scale,
             q_proj: linear(
                 config.hidden_size,
                 config.hidden_size,
@@ -288,18 +288,18 @@ impl CLIPEncoder {
     fn load(vb: VarBuilder, config: &CLIPConfig) -> Result<Self> {
         let mut layers = Vec::new();
         for _ in 1..config.clip_text_config.num_hidden_layers {
-            layers.push(CLIPEncoder::load(
+            layers.push(CLIPEncoderLayer::load(
                 vb.pp("encoder_layer"),
                 &config.clip_text_config,
             )?);
         }
-        Ok(Self { layers: layers })
+        Ok(Self { layers })
     }
 
     fn forward(&self, input_embeds: &Tensor) -> Result<Tensor> {
-        let mut layer_output = input_embeds;
+        let mut layer_output = input_embeds.clone();
         for i in 1..self.layers.len() {
-            layer_output = self.layers.forward(layer_output)?;
+            layer_output = self.layers[i].forward(&layer_output)?;
         }
         Ok(layer_output)
     }
@@ -311,6 +311,29 @@ struct CLIPTextTransformer {
     encoder: CLIPEncoder,
     final_layer_norm: LayerNorm,
     eos_token_id: usize,
+}
+
+impl CLIPTextTransformer {
+    fn load(vb: VarBuilder, config: &CLIPConfig) -> Result<Self> {
+        let embed_dim = config.clip_text_config.hidden_size;
+        let embeddings =
+            CLIPTextEmbeddings::load(vb.pp("clip_text_embeddings"), &config.clip_text_config)?;
+        let encoder = CLIPEncoder::load(vb.pp("clip_encoder"), &config)?;
+        let final_layer_norm = layer_norm(
+            embed_dim,
+            LayerNormConfig::default(),
+            vb.pp("final_layer_norm"),
+        )?;
+        let eos_token_id = config.clip_text_config.eos_token_id;
+
+        Ok(Self {
+            embed_dim,
+            embeddings,
+            encoder,
+            final_layer_norm,
+            eos_token_id,
+        })
+    }
 }
 
 struct CLIPTextModel {}

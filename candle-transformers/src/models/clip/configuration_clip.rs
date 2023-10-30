@@ -15,7 +15,7 @@ pub struct CLIPTextConfig {
     attention_dropout: f64,
     pad_token_id: usize,
     bos_token_id: usize,
-    pub eos_token_id: usize
+    pub eos_token_id: usize,
 }
 
 impl Default for CLIPTextConfig {
