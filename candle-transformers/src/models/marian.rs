@@ -1,6 +1,5 @@
-#![allow(unused)]
-use super::with_tracing::{linear, linear_no_bias, Embedding, Linear};
-use candle::{Module, Result, Tensor};
+use super::with_tracing::{linear, Embedding, Linear};
+use candle::{Result, Tensor};
 use candle_nn::{layer_norm, LayerNorm, VarBuilder};
 
 #[derive(Debug, Clone)]
@@ -126,6 +125,8 @@ struct Attention {
     scaling: f64,
     num_heads: usize,
     head_dim: usize,
+    kv_cache: Option<(Tensor, Tensor)>,
+    is_decoder: bool,
 }
 
 impl Attention {
@@ -150,6 +151,8 @@ impl Attention {
             scaling,
             num_heads,
             head_dim,
+            kv_cache: None,
+            is_decoder,
         })
     }
 
@@ -161,19 +164,31 @@ impl Attention {
     }
 
     fn forward(
-        &self,
+        &mut self,
         xs: &Tensor,
         kv_states: Option<&Tensor>,
         attn_mask: Option<&Tensor>,
     ) -> Result<Tensor> {
-        let is_cross_attn = kv_states.is_some();
         let (b_sz, tgt_len, _) = xs.dims3()?;
         let query_states = (xs.apply(&self.q_proj)? * self.scaling)?;
         let (key_states, value_states) = match kv_states {
             None => {
                 let key_states = self._shape(&xs.apply(&self.k_proj)?, b_sz)?;
                 let value_states = self._shape(&xs.apply(&self.v_proj)?, b_sz)?;
-                (key_states, value_states)
+                if self.is_decoder {
+                    let kv_states = match &self.kv_cache {
+                        None => (key_states, value_states),
+                        Some((p_key_states, p_value_states)) => {
+                            let key_states = Tensor::cat(&[p_key_states, &key_states], 2)?;
+                            let value_states = Tensor::cat(&[p_value_states, &value_states], 2)?;
+                            (key_states, value_states)
+                        }
+                    };
+                    self.kv_cache = Some(kv_states.clone());
+                    kv_states
+                } else {
+                    (key_states, value_states)
+                }
             }
             Some(kv_states) => {
                 let key_states = self._shape(&kv_states.apply(&self.k_proj)?, b_sz)?;
@@ -197,6 +212,10 @@ impl Attention {
             .transpose(1, 2)?
             .reshape((b_sz, tgt_len, self.head_dim * self.num_heads))?
             .apply(&self.out_proj)
+    }
+
+    fn reset_kv_cache(&mut self) {
+        self.kv_cache = None
     }
 }
 
@@ -227,7 +246,7 @@ impl EncoderLayer {
         })
     }
 
-    fn forward(&self, xs: &Tensor) -> Result<Tensor> {
+    fn forward(&mut self, xs: &Tensor) -> Result<Tensor> {
         let residual = xs;
         let xs = (self.self_attn.forward(xs, None, None)? + residual)?
             .apply(&self.self_attn_layer_norm)?;
@@ -237,6 +256,10 @@ impl EncoderLayer {
             .apply(&self.activation_fn)?
             .apply(&self.fc2)?;
         (xs + residual)?.apply(&self.final_layer_norm)
+    }
+
+    fn reset_kv_cache(&mut self) {
+        self.self_attn.reset_kv_cache()
     }
 }
 
@@ -275,7 +298,7 @@ impl DecoderLayer {
     }
 
     fn forward(
-        &self,
+        &mut self,
         xs: &Tensor,
         encoder_xs: Option<&Tensor>,
         attn_mask: &Tensor,
@@ -298,6 +321,11 @@ impl DecoderLayer {
             .apply(&self.fc2)?;
         let xs = (xs + residual)?.apply(&self.final_layer_norm)?;
         Ok(xs)
+    }
+
+    fn reset_kv_cache(&mut self) {
+        self.self_attn.reset_kv_cache();
+        self.encoder_attn.reset_kv_cache()
     }
 }
 
@@ -331,7 +359,7 @@ impl Encoder {
         })
     }
 
-    pub fn forward(&self, xs: &Tensor, past_kv_len: usize) -> Result<Tensor> {
+    pub fn forward(&mut self, xs: &Tensor, past_kv_len: usize) -> Result<Tensor> {
         let xs = xs.apply(&self.embed_tokens)?;
         let xs = match self.embed_scale {
             None => xs,
@@ -342,10 +370,16 @@ impl Encoder {
             .forward(&xs, past_kv_len)?
             .unsqueeze(0)?;
         let mut xs = xs.broadcast_add(&embed_pos)?;
-        for layer in self.layers.iter() {
+        for layer in self.layers.iter_mut() {
             xs = layer.forward(&xs)?
         }
         Ok(xs)
+    }
+
+    pub fn reset_kv_cache(&mut self) {
+        for layer in self.layers.iter_mut() {
+            layer.reset_kv_cache()
+        }
     }
 }
 
@@ -380,7 +414,7 @@ impl Decoder {
     }
 
     pub fn forward(
-        &self,
+        &mut self,
         xs: &Tensor,
         encoder_xs: Option<&Tensor>,
         past_kv_len: usize,
@@ -396,10 +430,16 @@ impl Decoder {
             .forward(&xs, past_kv_len)?
             .unsqueeze(0)?;
         let mut xs = xs.broadcast_add(&embed_pos)?;
-        for layer in self.layers.iter() {
+        for layer in self.layers.iter_mut() {
             xs = layer.forward(&xs, encoder_xs, attn_mask)?;
         }
         Ok(xs)
+    }
+
+    pub fn reset_kv_cache(&mut self) {
+        for layer in self.layers.iter_mut() {
+            layer.reset_kv_cache()
+        }
     }
 }
 
@@ -420,6 +460,11 @@ impl Model {
             encoder,
             decoder,
         })
+    }
+
+    fn reset_kv_cache(&mut self) {
+        self.encoder.reset_kv_cache();
+        self.decoder.reset_kv_cache();
     }
 }
 
@@ -443,15 +488,20 @@ impl MTModel {
         })
     }
 
-    pub fn encoder(&self) -> &Encoder {
-        &self.model.encoder
+    pub fn encoder(&mut self) -> &mut Encoder {
+        &mut self.model.encoder
     }
 
-    pub fn decoder(&self) -> &Decoder {
-        &self.model.decoder
+    pub fn decoder(&mut self) -> &mut Decoder {
+        &mut self.model.decoder
     }
 
-    pub fn decode(&self, xs: &Tensor, encoder_xs: &Tensor) -> Result<Tensor> {
+    pub fn decode(
+        &mut self,
+        xs: &Tensor,
+        encoder_xs: &Tensor,
+        past_kv_len: usize,
+    ) -> Result<Tensor> {
         let seq_len = xs.dim(1)?;
         let mask: Vec<_> = (0..seq_len)
             .flat_map(|i| (0..seq_len).map(move |j| if j > i { f32::NEG_INFINITY } else { 0f32 }))
@@ -459,8 +509,12 @@ impl MTModel {
         let mask = Tensor::from_vec(mask, (seq_len, seq_len), xs.device())?;
         self.model
             .decoder
-            .forward(xs, Some(encoder_xs), 0, &mask)?
+            .forward(xs, Some(encoder_xs), past_kv_len, &mask)?
             .apply(&self.lm_head)?
             .broadcast_add(&self.final_logits_bias)
+    }
+
+    pub fn reset_kv_cache(&mut self) {
+        self.model.reset_kv_cache();
     }
 }
