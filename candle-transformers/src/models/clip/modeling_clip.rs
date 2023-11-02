@@ -1,4 +1,5 @@
 use crate::models::clip::configuration_clip::{CLIPConfig, CLIPTextConfig, CLIPVisionConfig};
+use crate::models::stable_diffusion::attention;
 use crate::models::with_tracing::{linear, Embedding, Linear};
 //use crate::quantized_var_builder::VarBuilder;
 use candle::{DType, Device, IndexOp, Module, Result, Shape, Tensor, D};
@@ -313,6 +314,61 @@ struct CLIPTextTransformer {
     eos_token_id: usize,
 }
 
+struct AttentionMaskConverter {
+    is_causal: bool,
+    sliding_window: usize,
+}
+
+impl AttentionMaskConverter {
+    fn new(is_causal: bool, sliding_window: usize) -> Result<Self> {
+        Ok({
+            AttentionMaskConverter {
+                is_causal,
+                sliding_window,
+            }
+        })
+    }
+
+    fn _make_causal_mask() -> Result<Tensor> {
+        input_ids_shape: &[usize],
+        dtype: DType,
+        device: Device,
+        past_key_values_length: usize,
+        sliding_window: Optional
+    }
+
+    fn to_causal_4d(
+        &self,
+        batch_size: usize,
+        query_length: usize,
+        key_value_length: usize,
+        dtype: DType,
+        device: Device,
+    ) -> Result<Tensor> {
+        let input_shape = (batch_size, query_length);
+        let past_key_values_length = key_value_length - query_length;
+
+        // create causal mask
+        // [bsz, seq_len] -> [bsz, 1, tgt_seq_len, src_seq_len]
+        let causal_4d_mask = self._mask_causal_mask(
+            input_shape,
+            dtype,
+            device,
+            past_key_values_length,
+            self.sliding_window
+        )
+        Ok(Tensor::zeros((2, 3), DType::BF16, &Device::Cpu)?)
+
+    }
+}
+
+// fn _create_4d_causal_attention_mask(input_shape: &[usize], dtype: DType, device: Device) -> Result<Tensor> {
+//     let attn_mask_converter = AttentionMaskConverter(True, None)
+//     let key_value_length = input_shape[input_shape.len() - 1];
+//     let attention_mask = attn_mask_converter.to_causal_4d(input_shape[0], input_shape[input_shape.len() - 1], key_value_length, dtype, device)
+//     Ok(attention_mask)
+// }
+
 impl CLIPTextTransformer {
     fn load(vb: VarBuilder, config: &CLIPConfig) -> Result<Self> {
         let embed_dim = config.clip_text_config.hidden_size;
@@ -333,6 +389,25 @@ impl CLIPTextTransformer {
             final_layer_norm,
             eos_token_id,
         })
+    }
+
+    fn forward(&self, input_ids: &Tensor, position_ids: &Tensor) -> Result<Tensor> {
+        let input_shape_rank = input_ids.rank();
+        let input_shape = input_ids.dims();
+        let input_ids_reshaped = input_ids.reshape((
+            input_shape[input_shape_rank - 2],
+            input_shape[input_shape_rank - 1],
+        ))?;
+
+        let hidden_states =
+            self.embeddings
+                .forward(Some(&input_ids_reshaped), Some(position_ids), None)?;
+
+        // let causal_attention_mask = _create_4d_causal_attention_mask(
+        //     input_shape, hidden_states.dtype(), hidden_states.device()
+        // )
+
+        Ok(Tensor::zeros((2, 3), DType::F16, &Device::Cpu)?)
     }
 }
 
